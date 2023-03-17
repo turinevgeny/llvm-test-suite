@@ -1,0 +1,249 @@
+//==---------------- bfn.cpp - DPC++ ESIMD binary function test ------------==//
+//
+// Part of the LLVM Proj&&&ect, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: intel-gpu-dg2 || intel-gpu-pvc
+// UNSUPPORTED: cuda || hip
+// RUN: %clangxx -fsycl-device-code-split=per_kernel -fsycl %s -o %t.out
+// RUN: %GPU_RUN_PLACEHOLDER %t.out
+
+// This test checks binary function (bfn) operations. Combinations of
+// - argument type - uint16_t, uint32_t.
+// - binary function - several binary functins with three operands (~, &, |, ^).
+
+#include "esimd_test_utils.hpp"
+
+#include <sycl/ext/intel/esimd.hpp>
+#include <sycl/sycl.hpp>
+
+#include <iostream>
+
+using namespace sycl;
+using namespace sycl::ext::intel;
+
+// --- Initialization function for source operands of binary functions.
+
+template <class T> struct InitOps {
+  void operator()(T *In0, T *In1, T *In2, T *Out, size_t Size) const {
+    for (auto I = 0; I < Size; ++I) {
+      In0[I] = In1[I] = In2[I] = (I + 1);
+      Out[I] = (T)0;
+    }
+  }
+};
+
+// --- Test boolean control functions.
+
+constexpr experimental::esimd::bfn_t bfn_x = experimental::esimd::bfn_x;
+constexpr experimental::esimd::bfn_t bfn_y = experimental::esimd::bfn_y;
+constexpr experimental::esimd::bfn_t bfn_z = experimental::esimd::bfn_z;
+
+constexpr experimental::esimd::bfn_t F1 =  bfn_x | bfn_y | bfn_z;
+constexpr experimental::esimd::bfn_t F2 =  bfn_x & bfn_y & bfn_z;
+constexpr experimental::esimd::bfn_t F3 = ~bfn_x | bfn_y ^ bfn_z;
+
+// --- Template functions calculating given boolean operation on host and device
+
+enum ArgKind {
+  AllVec,
+  AllSca,
+};
+
+template <class T, experimental::esimd::bfn_t Op> struct HostFunc;
+
+#define DEFINE_HOST_OP(FUNC_CTRL)                                             \
+  template <class T> struct HostFunc<T, FUNC_CTRL> {                          \
+    T operator()(T X0, T X1, T X2) {                                          \
+      T res = 0;                                                              \
+      for (int i = 0; i < sizeof(X0)*8; i++) {                                \
+        T mask = 1 << i;                                                      \
+        res = (res & ~mask) |                                                 \
+          ((static_cast<uint8_t>(FUNC_CTRL) >>                                \
+            ((((X0 >> i) & 0x1)) +                                            \
+             (((X1 >> i) & 0x1) << 1) +                                       \
+             (((X2 >> i) & 0x1) << 2)) & 0x1) << i);                          \
+      }                                                                       \
+      return res;                                                             \
+    }                                                                         \
+  };
+
+DEFINE_HOST_OP(F1);
+DEFINE_HOST_OP(F2);
+DEFINE_HOST_OP(F3);
+
+// --- Specializations per each boolean operation.
+
+template <class T, int N, experimental::esimd::bfn_t Op, int Args=AllVec>
+struct ESIMDf;
+
+#define DEFINE_ESIMD_DEVICE_OP(FUNC_CTRL)                                      \
+  template <class T, int N>                                                    \
+  struct ESIMDf<T, N, FUNC_CTRL, AllVec> {                                     \
+    esimd::simd<T, N>                                                          \
+    operator()(esimd::simd<T, N> X0,                                           \
+               esimd::simd<T, N> X1,                                           \
+               esimd::simd<T, N> X2) const SYCL_ESIMD_FUNCTION {               \
+      return experimental::esimd::bfn<FUNC_CTRL, T, N>(X0, X1, X2);            \
+    }                                                                          \
+  };                                                                           \
+  template <class T, int N> struct ESIMDf<T, N, FUNC_CTRL, AllSca> {           \
+    esimd::simd<T, N> operator()(T X0, T X1, T X2) const SYCL_ESIMD_FUNCTION { \
+      return experimental::esimd::bfn<FUNC_CTRL, T, N>(X0, X1, X2);            \
+    }                                                                          \
+  };
+
+DEFINE_ESIMD_DEVICE_OP(F1);
+DEFINE_ESIMD_DEVICE_OP(F2);
+DEFINE_ESIMD_DEVICE_OP(F3);
+
+// --- Generic kernel calculating a binary function operation on array elements.
+
+template <class T, int N, experimental::esimd::bfn_t Op,
+          template <class, int, experimental::esimd::bfn_t, int> class Kernel,
+          typename AccIn, typename AccOut>
+struct DeviceFunc {
+  AccIn In0;
+  AccIn In1;
+  AccIn In2;
+  AccOut Out;
+
+  DeviceFunc(AccIn &In0, AccIn &In1, AccIn &In2, AccOut &Out) :
+    In0(In0), In1(In1), In2(In2), Out(Out) {}
+
+  void operator()(id<1> I) const SYCL_ESIMD_KERNEL {
+    unsigned int Offset = I * N * sizeof(T);
+    esimd::simd<T, N> V0;
+    esimd::simd<T, N> V1;
+    esimd::simd<T, N> V2;
+    V0.copy_from(In0, Offset);
+    V1.copy_from(In1, Offset);
+    V2.copy_from(In2, Offset);
+
+    if (I.get(0) % 2 == 0) {
+      for (int J = 0; J < N; J++) {
+        Kernel<T, N, Op, AllSca> DevF{};
+        T Val0 = V0[J];
+        T Val1 = V1[J];
+        T Val2 = V2[J];
+        esimd::simd<T, N> V = DevF(Val0, Val1, Val2); // scalar arg
+        V0[J] = V[J];
+      }
+    } else {
+      Kernel<T, N, Op, AllVec> DevF{};
+      V0 = DevF(V0, V1, V2); // vector arg
+    }
+    V0.copy_to(Out, Offset);
+  };
+};
+
+// --- Generic test function for boolean function.
+
+template <class T, int N, experimental::esimd::bfn_t Op,
+          template <class, int, experimental::esimd::bfn_t, int> class Kernel,
+          typename InitF = InitOps<T>>
+bool test(queue &Q, const std::string &Name,
+          InitF Init = InitOps<T>{}) {
+  constexpr size_t Size = 1024 * 128;
+
+  T *A = new T[Size];
+  T *B = new T[Size];
+  T *C = new T[Size];
+  T *D = new T[Size];
+  Init(A, B, C, D, Size);
+
+  std::cout << "  " << Name << " test" << "...\n";
+
+  try {
+    buffer<T, 1> BufA(A, range<1>(Size));
+    buffer<T, 1> BufB(B, range<1>(Size));
+    buffer<T, 1> BufC(C, range<1>(Size));
+    buffer<T, 1> BufD(D, range<1>(Size));
+
+    // number of workgroups
+    sycl::range<1> GlobalRange{Size / N};
+
+    // threads (workitems) in each workgroup
+    sycl::range<1> LocalRange{1};
+
+    auto E = Q.submit([&](handler &CGH) {
+      auto PA = BufA.template get_access<access::mode::read>(CGH);
+      auto PB = BufB.template get_access<access::mode::read>(CGH);
+      auto PC = BufC.template get_access<access::mode::read>(CGH);
+      auto PD = BufD.template get_access<access::mode::write>(CGH);
+      DeviceFunc<T, N, Op, Kernel, decltype(PA), decltype(PD)> F(
+        PA, PB, PC, PD);
+      CGH.parallel_for(nd_range<1>{GlobalRange, LocalRange}, F);
+    });
+    E.wait();
+  } catch (sycl::exception &Exc) {
+    std::cout << "    *** ERROR. SYCL exception caught: << " << Exc.what()
+              << "\n";
+    return false;
+  }
+
+  int ErrCnt = 0;
+
+  for (unsigned I = 0; I < Size; ++I) {
+    T Gold;
+
+    Gold = HostFunc<T, Op>{}((T)A[I], (T)B[I], (T)C[I]);
+    T Test = D[I];
+
+    if (Test != Gold) {
+      if (++ErrCnt < 10) {
+        std::cout << "\tfailed at index "
+                  << Test << " != " << Gold << " (gold); "
+                  << "Input was: "
+                  << (T)A[I] << ", " << (T)B[I] << ", " << (T)C[I] << "\n";
+      }
+    }
+  }
+  delete[] A;
+  delete[] B;
+  delete[] C;
+  delete[] D;
+
+  if (ErrCnt > 0) {
+    std::cout << "    pass rate: "
+              << ((float)(Size - ErrCnt) / (float)Size) * 100.0f << "% ("
+              << (Size - ErrCnt) << "/" << Size << ")\n";
+  }
+
+  std::cout << (ErrCnt > 0 ? "    FAILED\n" : "    Passed\n");
+  return ErrCnt == 0;
+}
+
+// --- Tests all boolean operations with given vector length.
+
+template <class T, int N> bool testESIMD(queue &Q) {
+  bool Pass = true;
+
+  std::cout << "--- TESTING ESIMD functions, T=" << typeid(T).name()
+            << ", N = " << N << "...\n";
+
+  Pass &= test<T, N, F1, ESIMDf>(Q, "F1");
+  Pass &= test<T, N, F2, ESIMDf>(Q, "F2");
+  Pass &= test<T, N, F3, ESIMDf>(Q, "F3");
+  return Pass;
+}
+
+// --- The entry point.
+
+int main(void) {
+  queue Q(esimd_test::ESIMDSelector, esimd_test::createExceptionHandler());
+  auto Dev = Q.get_device();
+  std::cout << "Running on " << Dev.get_info<sycl::info::device::name>()
+            << "\n";
+  bool Pass = true;
+  Pass &= testESIMD<uint16_t, 8>(Q);
+  Pass &= testESIMD<uint16_t, 16>(Q);
+  Pass &= testESIMD<uint16_t, 32>(Q);
+  Pass &= testESIMD<uint32_t, 8>(Q);
+  Pass &= testESIMD<uint32_t, 16>(Q);
+  Pass &= testESIMD<uint32_t, 32>(Q);
+  std::cout << (Pass ? "Test Passed\n" : "Test FAILED\n");
+  return Pass ? 0 : 1;
+}
