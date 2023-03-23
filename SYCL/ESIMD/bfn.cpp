@@ -39,8 +39,8 @@ template <class T> struct InitOps {
 
 using bfn_t = experimental::esimd::bfn_t;
 
-constexpr experimental::esimd::bfn_t F1 =  bfn_t::x | bfn_t::y | bfn_t::z;
-constexpr experimental::esimd::bfn_t F2 =  bfn_t::x & bfn_t::y & bfn_t::z;
+constexpr experimental::esimd::bfn_t F1 = bfn_t::x | bfn_t::y | bfn_t::z;
+constexpr experimental::esimd::bfn_t F2 = bfn_t::x & bfn_t::y & bfn_t::z;
 constexpr experimental::esimd::bfn_t F3 = ~bfn_t::x | bfn_t::y ^ bfn_t::z;
 
 // --- Template functions calculating given boolean operation on host and device
@@ -56,13 +56,14 @@ template <class T, experimental::esimd::bfn_t Op> struct HostFunc;
   template <class T> struct HostFunc<T, FUNC_CTRL> {                           \
     T operator()(T X0, T X1, T X2) {                                           \
       T res = 0;                                                               \
-      for (unsigned i = 0; i < sizeof(X0)*8; i++) {                            \
+      for (unsigned i = 0; i < sizeof(X0) * 8; i++) {                          \
         T mask = 0x1UL << i;                                                   \
         res = (res & ~mask) |                                                  \
-          ((static_cast<uint8_t>(FUNC_CTRL) >>                                 \
-            ((((X0 >> i) & 0x1UL)) +                                           \
-             (((X1 >> i) & 0x1UL) << 1) +                                      \
-             (((X2 >> i) & 0x1UL) << 2)) & 0x1UL) << i);                       \
+              ((static_cast<uint8_t>(FUNC_CTRL) >>                             \
+                    ((((X0 >> i) & 0x1UL)) + (((X1 >> i) & 0x1UL) << 1) +      \
+                     (((X2 >> i) & 0x1UL) << 2)) &                             \
+                0x1UL)                                                         \
+               << i);                                                          \
       }                                                                        \
       return res;                                                              \
     }                                                                          \
@@ -193,10 +194,10 @@ bool test(queue &Q, const std::string &Name,
 
     if (Test != Gold) {
       if (++ErrCnt < 10) {
-        std::cout << "\tfailed at index " << I << ", " << std::hex
-                  << Test << " != " << Gold << " (gold); "
-                  << "Input was: "
-                  << (T)A[I] << ", " << (T)B[I] << ", " << (T)C[I] << "; "
+        std::cout << "\tfailed at index " << I << ", " << std::hex << Test
+                  << " != " << Gold << " (gold); "
+                  << "Input was: " << (T)A[I] << ", " << (T)B[I] << ", "
+                  << (T)C[I] << "; "
                   << "FuncCtrl: " << int(Op) << std::dec << "\n";
       }
     }
@@ -230,7 +231,7 @@ template <class T, int N> bool testESIMD(queue &Q) {
   return Pass;
 }
 
-template<class T> bool testESIMDGroup(queue &Q) {
+template <class T> bool testESIMDGroup(queue &Q) {
   bool Pass = true;
   Pass &= testESIMD<T, 5>(Q);
   Pass &= testESIMD<T, 8>(Q);
