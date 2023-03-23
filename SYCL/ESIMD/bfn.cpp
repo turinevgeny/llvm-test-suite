@@ -1,7 +1,7 @@
 //==---------------- bfn.cpp - DPC++ ESIMD binary function test ------------==//
 //
-// Part of the LLVM Proj&&&ect, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// Part of the LLVM Proj&&&ect, under the Apache License v2.0 with LLVM
+// Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
@@ -75,15 +75,13 @@ DEFINE_HOST_OP(F3);
 
 // --- Specializations per each boolean operation.
 
-template <class T, int N, experimental::esimd::bfn_t Op, int Args=AllVec>
+template <class T, int N, experimental::esimd::bfn_t Op, int Args = AllVec>
 struct ESIMDf;
 
 #define DEFINE_ESIMD_DEVICE_OP(FUNC_CTRL)                                      \
-  template <class T, int N>                                                    \
-  struct ESIMDf<T, N, FUNC_CTRL, AllVec> {                                     \
+  template <class T, int N> struct ESIMDf<T, N, FUNC_CTRL, AllVec> {           \
     esimd::simd<T, N>                                                          \
-    operator()(esimd::simd<T, N> X0,                                           \
-               esimd::simd<T, N> X1,                                           \
+    operator()(esimd::simd<T, N> X0, esimd::simd<T, N> X1,                     \
                esimd::simd<T, N> X2) const SYCL_ESIMD_FUNCTION {               \
       return experimental::esimd::bfn<FUNC_CTRL, T, N>(X0, X1, X2);            \
     }                                                                          \
@@ -109,8 +107,8 @@ struct DeviceFunc {
   AccIn In2;
   AccOut Out;
 
-  DeviceFunc(AccIn &In0, AccIn &In1, AccIn &In2, AccOut &Out) :
-    In0(In0), In1(In1), In2(In2), Out(Out) {}
+  DeviceFunc(AccIn &In0, AccIn &In1, AccIn &In2, AccOut &Out)
+      : In0(In0), In1(In1), In2(In2), Out(Out) {}
 
   void operator()(id<1> I) const SYCL_ESIMD_KERNEL {
     unsigned int Offset = I * N * sizeof(T);
@@ -143,8 +141,7 @@ struct DeviceFunc {
 template <class T, int N, experimental::esimd::bfn_t Op,
           template <class, int, experimental::esimd::bfn_t, int> class Kernel,
           typename InitF = InitOps<T>>
-bool test(queue &Q, const std::string &Name,
-          InitF Init = InitOps<T>{}) {
+bool test(queue &Q, const std::string &Name, InitF Init = InitOps<T>{}) {
   constexpr size_t Range = 128;
   constexpr size_t Size = 128 * N;
 
@@ -154,7 +151,8 @@ bool test(queue &Q, const std::string &Name,
   T *D = new T[Size];
   Init(A, B, C, D, Size);
 
-  std::cout << "  " << Name << " test" << "...\n";
+  std::cout << "  " << Name << " test"
+            << "...\n";
 
   try {
     buffer<T, 1> BufA(A, range<1>(Size));
@@ -173,8 +171,8 @@ bool test(queue &Q, const std::string &Name,
       auto PB = BufB.template get_access<access::mode::read>(CGH);
       auto PC = BufC.template get_access<access::mode::read>(CGH);
       auto PD = BufD.template get_access<access::mode::write>(CGH);
-      DeviceFunc<T, N, Op, Kernel, decltype(PA), decltype(PD)> F(
-        PA, PB, PC, PD);
+      DeviceFunc<T, N, Op, Kernel, decltype(PA), decltype(PD)> F(PA, PB, PC,
+                                                                 PD);
       CGH.parallel_for(nd_range<1>{GlobalRange, LocalRange}, F);
     });
     E.wait();
