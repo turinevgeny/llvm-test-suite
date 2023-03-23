@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 // REQUIRES: intel-gpu-dg2 || intel-gpu-pvc
-// UNSUPPORTED: cuda || hip
 // RUN: %clangxx -fsycl-device-code-split=per_kernel -fsycl %s -o %t.out
 // RUN: %GPU_RUN_PLACEHOLDER %t.out
 
@@ -29,7 +28,9 @@ using namespace sycl::ext::intel;
 template <class T> struct InitOps {
   void operator()(T *In0, T *In1, T *In2, T *Out, size_t Size) const {
     for (auto I = 0; I < Size; ++I) {
-      In0[I] = In1[I] = In2[I] = (I + 1);
+      In0[I] = I * 3;
+      In1[I] = I * 3 + 1;
+      In2[I] = I * 3 + 2;
       Out[I] = (T)0;
     }
   }
@@ -138,12 +139,11 @@ struct DeviceFunc {
 
 // --- Generic test function for boolean function.
 
-template <class T, int N, experimental::esimd::bfn_t Op,
+template <class T, int N, experimental::esimd::bfn_t Op, int Range,
           template <class, int, experimental::esimd::bfn_t, int> class Kernel,
           typename InitF = InitOps<T>>
 bool test(queue &Q, const std::string &Name, InitF Init = InitOps<T>{}) {
-  constexpr size_t Range = 128;
-  constexpr size_t Size = 128 * N;
+  constexpr size_t Size = Range * N;
 
   T *A = new T[Size];
   T *B = new T[Size];
@@ -217,24 +217,34 @@ bool test(queue &Q, const std::string &Name, InitF Init = InitOps<T>{}) {
 
 // --- Tests all boolean operations with given vector length.
 
-template <class T, int N> bool testESIMD(queue &Q) {
+template <class T, int N, int Range> bool testESIMD(queue &Q) {
   bool Pass = true;
 
   std::cout << "--- TESTING ESIMD functions, T=" << typeid(T).name()
-            << ", N = " << N << "...\n";
+            << ", N = " << N << ", Range: " << Range << "...\n";
 
-  Pass &= test<T, N, F1, ESIMDf>(Q, "F1");
-  Pass &= test<T, N, F2, ESIMDf>(Q, "F2");
-  Pass &= test<T, N, F3, ESIMDf>(Q, "F3");
+  Pass &= test<T, N, F1, Range, ESIMDf>(Q, "F1");
+  Pass &= test<T, N, F2, Range, ESIMDf>(Q, "F2");
+  Pass &= test<T, N, F3, Range, ESIMDf>(Q, "F3");
+  return Pass;
+}
+
+template <class T, int N> bool testESIMDRanges(queue &Q) {
+  bool Pass = true;
+  // Test vector API.
+  Pass &= testESIMD<T, N, 128>(Q);
+  // Test scalar API with odd size.
+  Pass &= testESIMD<T, N, 101>(Q);
   return Pass;
 }
 
 template <class T> bool testESIMDGroup(queue &Q) {
   bool Pass = true;
-  Pass &= testESIMD<T, 5>(Q);
-  Pass &= testESIMD<T, 8>(Q);
-  Pass &= testESIMD<T, 16>(Q);
-  Pass &= testESIMD<T, 32>(Q);
+  Pass &= testESIMDRanges<T, 1>(Q);
+  Pass &= testESIMDRanges<T, 5>(Q);
+  Pass &= testESIMDRanges<T, 8>(Q);
+  Pass &= testESIMDRanges<T, 16>(Q);
+  Pass &= testESIMDRanges<T, 32>(Q);
   return Pass;
 }
 
