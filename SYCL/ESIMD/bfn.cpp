@@ -1,6 +1,6 @@
 //==---------------- bfn.cpp - DPC++ ESIMD binary function test ------------==//
 //
-// Part of the LLVM Proj&&&ect, under the Apache License v2.0 with LLVM
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM
 // Exceptions. See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -100,25 +100,22 @@ DEFINE_ESIMD_DEVICE_OP(F3);
 // --- Generic kernel calculating a binary function operation on array elements.
 
 template <class T, int N, experimental::esimd::bfn_t Op,
-          template <class, int, experimental::esimd::bfn_t, int> class Kernel,
-          typename AccIn, typename AccOut>
+          template <class, int, experimental::esimd::bfn_t, int> class Kernel>
 struct DeviceFunc {
-  AccIn In0;
-  AccIn In1;
-  AccIn In2;
-  AccOut Out;
+  const T *In0, *In1, *In2;
+  T *Out;
 
-  DeviceFunc(AccIn &In0, AccIn &In1, AccIn &In2, AccOut &Out)
+  DeviceFunc(const T *In0, const T *In1, const T *In2, T *Out)
       : In0(In0), In1(In1), In2(In2), Out(Out) {}
 
   void operator()(id<1> I) const SYCL_ESIMD_KERNEL {
-    unsigned int Offset = I * N * sizeof(T);
+    unsigned int Offset = I * N;
     esimd::simd<T, N> V0;
     esimd::simd<T, N> V1;
     esimd::simd<T, N> V2;
-    V0.copy_from(In0, Offset);
-    V1.copy_from(In1, Offset);
-    V2.copy_from(In2, Offset);
+    V0.copy_from(In0 + Offset);
+    V1.copy_from(In1 + Offset);
+    V2.copy_from(In2 + Offset);
 
     if (I.get(0) % 2 == 0) {
       for (int J = 0; J < N; J++) {
@@ -133,7 +130,7 @@ struct DeviceFunc {
       Kernel<T, N, Op, AllVec> DevF{};
       V0 = DevF(V0, V1, V2); // vector arg
     }
-    V0.copy_to(Out, Offset);
+    V0.copy_to(Out + Offset);
   };
 };
 
@@ -145,34 +142,28 @@ template <class T, int N, experimental::esimd::bfn_t Op, int Range,
 bool test(queue &Q, const std::string &Name, InitF Init = InitOps<T>{}) {
   constexpr size_t Size = Range * N;
 
-  T *A = new T[Size];
-  T *B = new T[Size];
-  T *C = new T[Size];
-  T *D = new T[Size];
+  auto UA = esimd_test::usm_malloc_shared<T>(Q, Size);
+  T *A = UA.get();
+  auto UB = esimd_test::usm_malloc_shared<T>(Q, Size);
+  T *B = UB.get();
+  auto UC = esimd_test::usm_malloc_shared<T>(Q, Size);
+  T *C = UC.get();
+  auto UD = esimd_test::usm_malloc_shared<T>(Q, Size);
+  T *D = UD.get();
   Init(A, B, C, D, Size);
 
   std::cout << "  " << Name << " test"
             << "...\n";
 
   try {
-    buffer<T, 1> BufA(A, range<1>(Size));
-    buffer<T, 1> BufB(B, range<1>(Size));
-    buffer<T, 1> BufC(C, range<1>(Size));
-    buffer<T, 1> BufD(D, range<1>(Size));
-
     // number of workgroups
     sycl::range<1> GlobalRange{Range};
 
     // threads (workitems) in each workgroup
     sycl::range<1> LocalRange{1};
 
-    auto E = Q.submit([&](handler &CGH) {
-      auto PA = BufA.template get_access<access::mode::read>(CGH);
-      auto PB = BufB.template get_access<access::mode::read>(CGH);
-      auto PC = BufC.template get_access<access::mode::read>(CGH);
-      auto PD = BufD.template get_access<access::mode::write>(CGH);
-      DeviceFunc<T, N, Op, Kernel, decltype(PA), decltype(PD)> F(PA, PB, PC,
-                                                                 PD);
+    auto E = Q.submit([=](handler &CGH) {
+      DeviceFunc<T, N, Op, Kernel> F(A, B, C, D);
       CGH.parallel_for(nd_range<1>{GlobalRange, LocalRange}, F);
     });
     E.wait();
@@ -200,10 +191,6 @@ bool test(queue &Q, const std::string &Name, InitF Init = InitOps<T>{}) {
       }
     }
   }
-  delete[] A;
-  delete[] B;
-  delete[] C;
-  delete[] D;
 
   if (ErrCnt > 0) {
     std::cout << "    pass rate: "
